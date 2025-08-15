@@ -1,3 +1,4 @@
+// Server/controllers/adminController.js
 import Admin from "../models/Admin.js";
 import Teacher from "../models/Teacher.js";
 import Student from "../models/Student.js";
@@ -7,8 +8,9 @@ import Fee from "../models/Fee.js";
 import Notice from "../models/Notice.js";
 import bcrypt from "bcryptjs";
 
-// 🧠 Admin Dashboard Data
 
+
+// 🧠 Admin Dashboard Data
 
 // ✅ GET /api/admin/dashboard
 export const getAdminDashboard = async (req, res) => {
@@ -71,6 +73,77 @@ export const getAdminDashboard = async (req, res) => {
   }
 };
 
+// ---------------------- new sync endpoint ----------------------
+/**
+ * POST /api/admin/sync/relations
+ * One-off: iterate batches and ensure Teacher.batches, Teacher.courseIds and Course.batches are in sync.
+ * Protected – admin only.
+ */
+export const syncRelations = async (req, res) => {
+  try {
+    // Optionally accept a query param ?limit=100 to limit how many batches processed in one run
+    const limit = parseInt(req.query.limit, 10) || 0; // 0 => process all
+    const filter = {};
+    const batches = limit > 0
+      ? await Batch.find(filter).limit(limit).lean()
+      : await Batch.find(filter).lean();
+
+    let updatedCount = 0;
+    const errors = [];
+
+    for (const b of batches) {
+      try {
+        const batchId = b._id;
+        const teacherId = b.teacherId;
+        const courseId = b.courseId;
+
+        // Update teacher: add batchId and courseId
+        if (teacherId) {
+          await Teacher.findByIdAndUpdate(
+            teacherId,
+            { $addToSet: { batches: batchId, courseIds: courseId } },
+            { new: true }
+          );
+        }
+
+        // Update course: add embedded batch object if missing
+        if (courseId) {
+          // Use name and startDate to avoid duplicates (Course.batches is an embedded array)
+          await Course.updateOne(
+            { _id: courseId, "batches.name": { $ne: b.name } },
+            {
+              $addToSet: {
+                batches: {
+                  name: b.name,
+                  startDate: b.startDate,
+                  teacher: teacherId
+                }
+              }
+            }
+          );
+        }
+
+        updatedCount++;
+      } catch (innerErr) {
+        console.error("Error syncing batch", b._id, innerErr);
+        errors.push({ batchId: b._id, message: innerErr.message });
+      }
+    }
+
+    res.json({
+      success: true,
+      message: "Sync completed",
+      processed: batches.length,
+      updated: updatedCount,
+      errors
+    });
+  } catch (err) {
+    console.error("syncRelations error:", err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+// ---------------------- end sync endpoint ----------------------
+
 // ✅ GET /api/admin/profile
 export const getAdminProfile = async (req, res) => {
   try {
@@ -90,11 +163,12 @@ export const getAdminProfile = async (req, res) => {
   }
 };
 
-
 // ✅ All Students
 export const getAllStudents = async (req, res) => {
   try {
-    const students = await Student.find().select('-password');
+    const students = await Student.find()
+      .select('-password')
+      .populate('batch', 'name'); // Only get batch name
     res.json({ success: true, students });
   } catch (error) {
     res.status(500).json({
@@ -271,5 +345,98 @@ export const createAnnouncement = async (req, res) => {
     res.status(201).json({ message: 'Notice created successfully', notice });
   } catch (err) {
     res.status(500).json({ message: 'Failed to create announcement', error: err.message });
+  }
+};
+
+/**
+ * PATCH /api/admin/user/:id/status
+ * Body: { role: "student" | "teacher", status: "active" | ... }
+ */
+export const changeUserStatus = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { role, status } = req.body;
+
+    if (!role || !['student', 'teacher'].includes(role)) {
+      return res.status(400).json({ success: false, message: 'Role must be student or teacher' });
+    }
+
+    // Allowed statuses
+    const allowedStatuses = role === 'teacher'
+      ? ['pending', 'active', 'suspended', 'inactive', 'on-leave']
+      : ['pending', 'active', 'suspended', 'inactive'];
+
+    if (!allowedStatuses.includes(status)) {
+      return res.status(400).json({ success: false, message: 'Invalid status value' });
+    }
+
+    const Model = role === 'student' ? Student : Teacher;
+    const user = await Model.findByIdAndUpdate(
+      id,
+      { status },
+      { new: true }
+    ).select('-password');
+
+    if (!user) {
+      return res.status(404).json({ success: false, message: `${role.charAt(0).toUpperCase() + role.slice(1)} not found` });
+    }
+
+    res.json({ success: true, message: `${role.charAt(0).toUpperCase() + role.slice(1)} status updated`, user });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Error updating status', error: error.message });
+  }
+};
+
+/**
+ * GET /api/admin/pending-approvals
+ * Returns all students and teachers with status 'pending' and their details.
+ */
+export const getPendingApprovals = async (req, res) => {
+  try {
+    const [pendingStudents, pendingTeachers] = await Promise.all([
+      Student.find({ status: 'pending' }).select('-password'),
+      Teacher.find({ status: 'pending' }).select('-password')
+    ]);
+
+    res.status(200).json({
+      success: true,
+      students: pendingStudents,
+      teachers: pendingTeachers,
+      total: pendingStudents.length + pendingTeachers.length
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch pending approvals",
+      error: error.message
+    });
+  }
+};
+
+/**
+ * GET /api/admin/active-users
+ * Returns all students and teachers who have logged in within the past 24 hours.
+ */
+export const getActiveUsers = async (req, res) => {
+  try {
+    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+    const [activeStudents, activeTeachers] = await Promise.all([
+      Student.find({ lastLogin: { $gte: oneDayAgo } }).select('-password'),
+      Teacher.find({ lastLogin: { $gte: oneDayAgo } }).select('-password')
+    ]);
+
+    res.status(200).json({
+      success: true,
+      students: activeStudents,
+      teachers: activeTeachers,
+      total: activeStudents.length + activeTeachers.length
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch active users",
+      error: error.message
+    });
   }
 };
