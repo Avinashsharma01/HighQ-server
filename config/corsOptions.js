@@ -1,7 +1,7 @@
 const allowedOrigins = [
     'http://localhost:5000',
     'http://localhost:8080', // For React/Vite frontend
-    // 'https://highq-classes.vercel.app'
+    'https://highq-server.onrender.com'
 ];
 
 const corsOptions = {
