@@ -1,7 +1,7 @@
 const allowedOrigins = [
+    'https://highq-server.onrender.com',
     'http://localhost:5000',
-    'http://localhost:8080', // For React/Vite frontend
-    'https://highq-server.onrender.com'
+    'http://localhost:8080' // For React/Vite frontend
 ];
 
 const corsOptions = {
