@@ -1,5 +1,6 @@
 const allowedOrigins = [
     'https://highq-server.onrender.com',
+    'https://high-q-client.vercel.app',
     'http://localhost:5000',
     'http://localhost:8080' // For React/Vite frontend
 ];
